@@ -1,148 +1,473 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <title>Запуск</title>
+    <title>Пуск ракеты</title>
     <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0, viewport-fit=cover'>
     <style>
+        :root {
+            --bg:        #08090c;
+            --bg-2:      #0e1116;
+            --ink:       #eef1f5;
+            --muted:     #6b7480;
+            --muted-2:   #444c57;
+            --line:      rgba(255,255,255,.07);
+            --line-2:    rgba(255,255,255,.12);
+            --amber:     #ff8a1e;
+            --amber-2:   #ffb24d;
+            --amber-soft:rgba(255,138,30,.45);
+            --hot:       #ff3b30;
+            --hot-soft:  rgba(255,59,48,.5);
+            --ok:        #2fd98a;
+            --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Segoe UI Mono", Menlo, Consolas, monospace;
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body { height: 100%; }
+
         body {
-            text-align:center;
-            font-family:Arial,sans-serif;
-            margin:0;
-            padding:20px;
-            background:#1a1a1a;
-            color:#fff;
-            min-height:100vh;
-            display:flex;
-            flex-direction:column;
-            justify-content:center;
-            align-items:center;
-        }
-        h1 {
-            font-size:2.5em;
-            margin:40px 0;
-            text-shadow:2px 2px 4px rgba(0,0,0,0.5);
-        }
-        .launch-btn {
-            padding:30px 60px;
-            font-size:28px;
-            background:linear-gradient(45deg, #ff6b35, #f7931e);
-            color:white;
-            border:none;
-            border-radius:15px;
-            cursor:pointer;
-            box-shadow:0 8px 16px rgba(255,107,53,0.3);
-            transition:all 0.3s ease;
-            min-width:280px;
-            font-weight:bold;
-            text-transform:uppercase;
-            letter-spacing:1px;
-        }
-        .launch-btn:hover {
-            transform:translateY(-2px);
-            box-shadow:0 12px 24px rgba(255,107,53,0.4);
-        }
-        .launch-btn:active {
-            transform:translateY(0);
-            box-shadow:0 4px 8px rgba(255,107,53,0.3);
-        }
-        .launch-btn:disabled {
-            background:#666;
-            cursor:not-allowed;
-            transform:none;
-            box-shadow:none;
-        }
-        .launch-btn.cancel-btn {
-            background:linear-gradient(45deg, #e53935, #b71c1c);
-            box-shadow:0 8px 16px rgba(229,57,53,0.3);
+            margin: 0;
+            padding: clamp(16px, 4vw, 32px);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: clamp(28px, 6vh, 56px);
+            font-family: var(--font-sans);
+            color: var(--ink);
+            background: var(--bg);
+            overflow: hidden;
+            position: relative;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        .countdown-display {
-            font-size:4em;
-            font-weight:bold;
-            color:#ff6b35;
-            text-shadow:0 0 20px rgba(255,107,53,0.8);
-            margin:30px 0;
-            opacity:0;
-            transition:all 0.3s ease;
+        /* ---- atmosphere: grid + vignette ---- */
+        .backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: -2;
+            background:
+                radial-gradient(120% 90% at 50% 0%, #15191f 0%, var(--bg) 60%),
+                var(--bg);
         }
-        .countdown-display.active {
-            opacity:1;
-            transform:scale(1.1);
+        .backdrop::before {
+            content: '';
+            position: absolute;
+            inset: -2px;
+            background-image:
+                linear-gradient(var(--line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--line) 1px, transparent 1px);
+            background-size: 44px 44px;
+            mask-image: radial-gradient(120% 80% at 50% 35%, #000 30%, transparent 78%);
+            -webkit-mask-image: radial-gradient(120% 80% at 50% 35%, #000 30%, transparent 78%);
+            opacity: .55;
+        }
+        .backdrop::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            box-shadow: inset 0 0 200px 60px rgba(0,0,0,.7);
         }
 
-        .status-message {
-            font-size:1.5em;
-            color:#4CAF50;
-            margin:20px 0;
-            opacity:0;
-            transition:opacity 0.3s ease;
+        /* ---- top telemetry bar ---- */
+        .topbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: clamp(14px, 3vw, 22px) clamp(16px, 4vw, 28px);
+            font-family: var(--font-mono);
+            z-index: 5;
+            pointer-events: none;
         }
-        .status-message.visible {
-            opacity:1;
+        .brand {
+            font-size: .68rem;
+            letter-spacing: .22em;
+            text-transform: uppercase;
+            color: var(--muted);
         }
+        .brand b { color: var(--ink); font-weight: 600; }
 
         .connection-status {
-            position:absolute;
-            top:20px;
-            right:20px;
-            padding:8px 16px;
-            border-radius:20px;
-            font-size:0.9em;
-            font-weight:bold;
+            display: inline-flex;
+            align-items: center;
+            gap: .55em;
+            padding: .4em .8em;
+            border: 1px solid var(--line-2);
+            border-radius: 999px;
+            font-size: .66rem;
+            font-weight: 600;
+            letter-spacing: .16em;
+            text-transform: uppercase;
+            color: var(--muted);
+            background: rgba(255,255,255,.02);
+            backdrop-filter: blur(4px);
+            transition: color .3s ease, border-color .3s ease;
         }
-        .connected { background:#4CAF50; color:white; }
-        .disconnected { background:#f44336; color:white; }
+        .connection-status .dot {
+            width: .5em; height: .5em;
+            border-radius: 50%;
+            background: currentColor;
+            flex: none;
+        }
+        .connection-status.connected { color: var(--ok); border-color: rgba(47,217,138,.3); }
+        .connection-status.connected .dot {
+            box-shadow: 0 0 8px var(--ok);
+            animation: blip 2.2s ease-in-out infinite;
+        }
+        .connection-status.disconnected { color: var(--hot); border-color: rgba(255,59,48,.28); }
 
-        @media (max-width: 768px) {
-            body { padding:15px; }
-            h1 { font-size:2.2em; margin:30px 0; }
-            .launch-btn {
-                padding:25px 50px;
-                font-size:24px;
-                min-width:250px;
-            }
-            .countdown-display { font-size:3em; }
+        /* ---- heading ---- */
+        .head {
+            text-align: center;
+            animation: rise .8s .05s both cubic-bezier(.2,.8,.2,1);
+        }
+        .kicker {
+            font-family: var(--font-mono);
+            font-size: .7rem;
+            letter-spacing: .42em;
+            text-transform: uppercase;
+            color: var(--amber);
+            margin-bottom: .9em;
+            opacity: .85;
+        }
+        h1 {
+            margin: 0;
+            font-size: clamp(2rem, 8vw, 3.4rem);
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            background: linear-gradient(180deg, #fff 0%, #b9c0c9 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
         }
 
-        @media (max-width: 480px) {
-            h1 { font-size:2em; margin:25px 0; }
-            .launch-btn {
-                padding:20px 40px;
-                font-size:20px;
-                min-width:220px;
-            }
-            .countdown-display { font-size:2.5em; }
-            .connection-status { top:10px; right:10px; font-size:0.8em; }
+        /* ---- the gauge: persistent launch instrument ---- */
+        .gauge {
+            position: relative;
+            width: clamp(230px, 72vw, 320px);
+            aspect-ratio: 1;
+            display: grid;
+            place-items: center;
+            animation: rise .9s .18s both cubic-bezier(.2,.8,.2,1);
+        }
+        .gauge::before { /* atmospheric glow */
+            content: '';
+            position: absolute;
+            inset: -12%;
+            border-radius: 50%;
+            background: radial-gradient(circle, var(--amber-soft) 0%, transparent 64%);
+            filter: blur(26px);
+            opacity: .22;
+            z-index: -1;
+            transition: opacity .6s ease, background .6s ease;
+            animation: breathe 4.5s ease-in-out infinite;
+        }
+        .gauge::after { /* launch flare */
+            content: '';
+            position: absolute;
+            inset: 4%;
+            border-radius: 50%;
+            border: 2px solid var(--amber-2);
+            opacity: 0;
+            transform: scale(.7);
+            pointer-events: none;
+        }
+        .gauge[data-state="armed"]::before { opacity: .5; }
+        .gauge.hot::before {
+            background: radial-gradient(circle, var(--hot-soft) 0%, transparent 64%);
+            opacity: .8;
+            animation-duration: .9s;
+        }
+        .gauge[data-state="launched"]::before {
+            opacity: 1;
+            background: radial-gradient(circle, #fff 0%, var(--amber) 38%, transparent 70%);
+        }
+        .gauge[data-state="launched"]::after { animation: flare .75s ease-out; }
+        .gauge[data-state="cancelled"]::before {
+            background: radial-gradient(circle, var(--hot-soft) 0%, transparent 64%);
+            opacity: .55;
         }
 
-        @media (max-width: 320px) {
-            body { padding:10px; }
-            h1 { font-size:1.8em; margin:20px 0; }
-            .launch-btn {
-                padding:18px 35px;
-                font-size:18px;
-                min-width:200px;
+        .gauge svg { width: 100%; height: 100%; display: block; }
+        .ring-track {
+            fill: none;
+            stroke: var(--line-2);
+            stroke-width: 3;
+        }
+        .ring-progress {
+            fill: none;
+            stroke: var(--amber);
+            stroke-width: 5;
+            stroke-linecap: round;
+            filter: drop-shadow(0 0 6px var(--amber-soft));
+            transition: stroke-dashoffset 1s linear, stroke .45s ease, filter .45s ease;
+        }
+        .gauge.hot .ring-progress {
+            stroke: var(--hot);
+            filter: drop-shadow(0 0 10px var(--hot-soft));
+        }
+        .gauge[data-state="launched"] .ring-progress {
+            stroke: var(--amber-2);
+            filter: drop-shadow(0 0 14px #fff);
+        }
+
+        .gauge-core {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: .35em;
+            text-align: center;
+            padding: 0 14%;
+        }
+        .gauge-caption {
+            font-family: var(--font-mono);
+            font-size: .64rem;
+            letter-spacing: .35em;
+            text-transform: uppercase;
+            color: var(--muted-2);
+        }
+        .gauge-value {
+            font-family: var(--font-mono);
+            font-weight: 700;
+            font-size: clamp(2.6rem, 16vw, 5.6rem);
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -.02em;
+            color: var(--ink);
+            transition: color .4s ease;
+        }
+        .gauge[data-state="idle"] .gauge-value {
+            font-size: clamp(1.3rem, 7vw, 2.2rem);
+            letter-spacing: .18em;
+            color: var(--muted);
+        }
+        .gauge[data-state="armed"] .gauge-value { color: var(--amber-2); text-shadow: 0 0 24px var(--amber-soft); }
+        .gauge.hot .gauge-value { color: var(--hot); text-shadow: 0 0 24px var(--hot-soft); }
+        .gauge[data-state="launched"] .gauge-value { animation: liftoff 1.1s ease-in both; }
+        .gauge[data-state="cancelled"] .gauge-value {
+            font-size: clamp(2rem, 10vw, 3.2rem);
+            color: var(--hot);
+        }
+        .gauge-value.tick { animation: tick .42s cubic-bezier(.2,.9,.25,1); }
+
+        .gauge-sub {
+            font-family: var(--font-mono);
+            font-size: .72rem;
+            letter-spacing: .08em;
+            color: var(--muted);
+            min-height: 1.2em;
+            max-width: 18ch;
+            transition: color .3s ease;
+        }
+        .gauge-sub.flash { animation: subflash .5s ease; }
+
+        /* ---- launch button ---- */
+        .launch-btn {
+            position: relative;
+            appearance: none;
+            border: none;
+            cursor: pointer;
+            padding: clamp(18px, 4vw, 22px) clamp(44px, 12vw, 72px);
+            min-width: clamp(220px, 60vw, 280px);
+            font-family: var(--font-mono);
+            font-size: clamp(1rem, 4vw, 1.15rem);
+            font-weight: 700;
+            letter-spacing: .28em;
+            text-transform: uppercase;
+            color: #1a0d02;
+            background: linear-gradient(135deg, var(--amber-2), var(--amber));
+            border-radius: 14px;
+            box-shadow: 0 10px 30px -8px var(--amber-soft), inset 0 1px 0 rgba(255,255,255,.35);
+            overflow: hidden;
+            transition: transform .18s ease, box-shadow .25s ease, background .35s ease, color .35s ease;
+            animation: rise 1s .3s both cubic-bezier(.2,.8,.2,1);
+        }
+        .launch-btn .btn-label { position: relative; z-index: 1; }
+        .launch-btn::before { /* shimmer sweep */
+            content: '';
+            position: absolute;
+            top: 0; left: -60%;
+            width: 50%; height: 100%;
+            background: linear-gradient(100deg, transparent, rgba(255,255,255,.55), transparent);
+            transform: skewX(-20deg);
+            animation: shimmer 3.6s ease-in-out infinite;
+        }
+        .launch-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 16px 38px -8px var(--amber-soft), inset 0 1px 0 rgba(255,255,255,.45);
+        }
+        .launch-btn:active { transform: translateY(0); }
+        .launch-btn:disabled {
+            cursor: not-allowed;
+            color: var(--muted-2);
+            background: #1a1e24;
+            box-shadow: inset 0 0 0 1px var(--line-2);
+        }
+        .launch-btn:disabled::before { display: none; }
+
+        .launch-btn.cancel-btn {
+            color: #fff;
+            background: linear-gradient(135deg, #ff5b52, var(--hot));
+            box-shadow: 0 10px 30px -8px var(--hot-soft), inset 0 1px 0 rgba(255,255,255,.3);
+            animation: pulse-cancel 1.4s ease-in-out infinite;
+        }
+        .launch-btn.cancel-btn::before { display: none; }
+
+        /* ---- keyframes ---- */
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(22px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes breathe {
+            0%, 100% { transform: scale(.96); }
+            50%      { transform: scale(1.06); }
+        }
+        @keyframes tick {
+            0%   { transform: scale(1.45); opacity: 0; filter: blur(2px); }
+            60%  { opacity: 1; filter: blur(0); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes flare {
+            0%   { opacity: .9; transform: scale(.7); }
+            100% { opacity: 0; transform: scale(1.55); }
+        }
+        @keyframes liftoff {
+            0%   { transform: translateY(0); opacity: 1; }
+            70%  { transform: translateY(-26px); opacity: 1; }
+            100% { transform: translateY(-60px); opacity: 0; }
+        }
+        @keyframes blip {
+            0%, 100% { opacity: 1; }
+            50%      { opacity: .25; }
+        }
+        @keyframes shimmer {
+            0%, 100% { left: -60%; }
+            55%, 100% { left: 130%; }
+        }
+        @keyframes pulse-cancel {
+            0%, 100% { box-shadow: 0 10px 30px -8px var(--hot-soft), inset 0 1px 0 rgba(255,255,255,.3); }
+            50%      { box-shadow: 0 10px 44px -4px var(--hot), inset 0 1px 0 rgba(255,255,255,.3); }
+        }
+        @keyframes subflash {
+            0%   { color: var(--amber-2); }
+            100% { color: var(--muted); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: .001ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: .12s !important;
             }
-            .countdown-display { font-size:2em; }
         }
     </style>
 </head>
 <body>
-    <div class="connection-status disconnected" id="status">Отключено</div>
-    <h1>🚀 Пуск ракеты</h1>
-    <div class="countdown-display" id="countdown"></div>
-    <div class="status-message" id="message"></div>
-    <button class='launch-btn' id="launchBtn" onclick='onLaunchBtn()'>Запуск</button>
+    <div class="backdrop"></div>
+
+    <div class="topbar">
+        <div class="brand"><b>FIRESTARTER</b> // стартовый комплекс</div>
+        <div class="connection-status disconnected" id="status">
+            <span class="dot"></span><span id="statusText">Отключено</span>
+        </div>
+    </div>
+
+    <div class="head">
+        <div class="kicker">обратный отсчёт</div>
+        <h1>Пуск ракеты</h1>
+    </div>
+
+    <div class="gauge" id="gauge" data-state="idle">
+        <svg viewBox="0 0 280 280" aria-hidden="true">
+            <g transform="rotate(-90 140 140)">
+                <circle class="ring-track" cx="140" cy="140" r="120"></circle>
+                <circle class="ring-progress" id="ringProgress" cx="140" cy="140" r="120"></circle>
+            </g>
+        </svg>
+        <div class="gauge-core">
+            <div class="gauge-caption">T — MINUS</div>
+            <div class="gauge-value" id="countdown">ГОТОВ</div>
+            <div class="gauge-sub" id="message">система готова к запуску</div>
+        </div>
+    </div>
+
+    <button class='launch-btn' id="launchBtn" onclick='onLaunchBtn()'>
+        <span class="btn-label">Запуск</span>
+    </button>
 
     <script>
+        const R = 120;
+        const CIRC = 2 * Math.PI * R;
+
         let ws;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 8;
-        const statusEl = document.getElementById('status');
+
+        const statusEl    = document.getElementById('status');
+        const statusText  = document.getElementById('statusText');
+        const gaugeEl     = document.getElementById('gauge');
         const countdownEl = document.getElementById('countdown');
-        const messageEl = document.getElementById('message');
-        const launchBtn = document.getElementById('launchBtn');
+        const messageEl   = document.getElementById('message');
+        const launchBtn   = document.getElementById('launchBtn');
+        const btnLabel    = launchBtn.querySelector('.btn-label');
+        const ringEl      = document.getElementById('ringProgress');
+
+        // Инициализация кольца отсчёта: полное кольцо = шкала, прогресс скрыт.
+        ringEl.style.strokeDasharray  = CIRC;
+        ringEl.style.strokeDashoffset = CIRC;
+
+        // Режим кнопки: 'idle' = Запуск, 'cancel' = Отмена.
+        let btnMode = 'idle';
+        // ID текущего запуска (из кадров отсчёта) — отправляем его в /cancel,
+        // чтобы запоздавшая отмена не прервала уже следующий пуск.
+        let launchId = null;
+        // Стартовое значение отсчёта — задаёт масштаб кольца (определяется на лету).
+        let totalCount = null;
+
+        // fraction: 0..1 — доля оставшегося времени (заполненность дуги).
+        function setRing(fraction) {
+            const f = Math.max(0, Math.min(1, fraction));
+            ringEl.style.strokeDashoffset = CIRC * (1 - f);
+        }
+
+        // Перезапуск «удара» цифры при каждом тике.
+        function punch(text) {
+            countdownEl.textContent = text;
+            countdownEl.classList.remove('tick');
+            void countdownEl.offsetWidth; // форсируем reflow для рестарта анимации
+            countdownEl.classList.add('tick');
+        }
+
+        function setIdle() {
+            btnMode = 'idle';
+            launchId = null;
+            totalCount = null;
+            gaugeEl.dataset.state = 'idle';
+            gaugeEl.classList.remove('hot');
+            countdownEl.classList.remove('tick');
+            countdownEl.textContent = 'ГОТОВ';
+            messageEl.textContent = 'система готова к запуску';
+            setRing(0);
+            launchBtn.disabled = false;
+            launchBtn.classList.remove('cancel-btn');
+            btnLabel.textContent = 'Запуск';
+        }
+
+        function setCancel() {
+            btnMode = 'cancel';
+            launchBtn.disabled = false;
+            launchBtn.classList.add('cancel-btn');
+            btnLabel.textContent = 'Отмена';
+        }
 
         function connectWS() {
             if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -150,7 +475,7 @@
             ws = new WebSocket(`${proto}://${location.host}/ws`);
 
             ws.onopen = () => {
-                statusEl.textContent = 'Подключено';
+                statusText.textContent = 'Подключено';
                 statusEl.className = 'connection-status connected';
                 reconnectAttempts = 0;
             };
@@ -158,7 +483,7 @@
                 try { handleMessage(JSON.parse(event.data)); } catch (e) { console.error('WS parse error', e); }
             };
             ws.onclose = () => {
-                statusEl.textContent = 'Отключено';
+                statusText.textContent = 'Отключено';
                 statusEl.className = 'connection-status disconnected';
                 if (reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;
@@ -173,73 +498,60 @@
             switch (data.type) {
                 case 'countdown_start':
                     if (data.id != null) launchId = data.id;
+                    totalCount = null;
                     setCancel();
-                    countdownEl.classList.add('active');
-                    messageEl.classList.remove('visible');
+                    gaugeEl.dataset.state = 'armed';
+                    gaugeEl.classList.remove('hot');
+                    countdownEl.textContent = '—';
+                    messageEl.textContent = 'обратный отсчёт пошёл';
+                    setRing(1);
                     break;
 
                 case 'countdown':
                     if (data.id != null) launchId = data.id;
+                    if (totalCount == null) totalCount = data.count || 9;
                     setCancel();
-                    countdownEl.textContent = data.count;
-                    countdownEl.classList.add('active');
+                    gaugeEl.dataset.state = 'armed';
+                    punch(data.count);
+                    setRing(data.count / totalCount);
+                    gaugeEl.classList.toggle('hot', data.count <= 3);
                     break;
 
                 case 'launch':
                     // Зафиксировано: отмена больше недоступна.
                     btnMode = 'idle';
                     launchBtn.disabled = true;
-                    launchBtn.textContent = 'Запуск';
                     launchBtn.classList.remove('cancel-btn');
+                    btnLabel.textContent = 'Запуск';
+                    gaugeEl.dataset.state = 'launched';
+                    gaugeEl.classList.remove('hot');
+                    countdownEl.classList.remove('tick');
                     countdownEl.textContent = '🚀';
-                    messageEl.textContent = data.message;
-                    messageEl.classList.add('visible');
-                    setTimeout(() => {
-                        countdownEl.classList.remove('active');
-                        messageEl.classList.remove('visible');
-                        launchBtn.disabled = false;
-                    }, 3000);
+                    messageEl.textContent = data.message || 'Пуск!';
+                    setRing(0);
+                    setTimeout(setIdle, 3200);
                     break;
 
                 case 'cancelled':
-                    countdownEl.classList.remove('active');
-                    countdownEl.textContent = '';
-                    messageEl.textContent = data.message;
-                    messageEl.classList.add('visible');
-                    setTimeout(() => messageEl.classList.remove('visible'), 3000);
-                    setIdle();
+                    gaugeEl.dataset.state = 'cancelled';
+                    gaugeEl.classList.remove('hot');
+                    countdownEl.classList.remove('tick');
+                    countdownEl.textContent = '✕';
+                    messageEl.textContent = data.message || 'Запуск отменён';
+                    setRing(0);
+                    setTimeout(setIdle, 2600);
                     break;
 
                 case 'status':
                     messageEl.textContent = data.message;
-                    messageEl.classList.add('visible');
-                    setTimeout(() => messageEl.classList.remove('visible'), 3000);
+                    messageEl.classList.remove('flash');
+                    void messageEl.offsetWidth;
+                    messageEl.classList.add('flash');
                     break;
 
                 default:
                     console.log('Unknown msg', data);
             }
-        }
-
-        // Режим кнопки: 'idle' = Запуск, 'cancel' = Отмена.
-        let btnMode = 'idle';
-        // ID текущего запуска (из кадров отсчёта) — отправляем его в /cancel,
-        // чтобы запоздавшая отмена не прервала уже следующий пуск.
-        let launchId = null;
-
-        function setIdle() {
-            btnMode = 'idle';
-            launchId = null;
-            launchBtn.disabled = false;
-            launchBtn.textContent = 'Запуск';
-            launchBtn.classList.remove('cancel-btn');
-        }
-
-        function setCancel() {
-            btnMode = 'cancel';
-            launchBtn.disabled = false;
-            launchBtn.textContent = 'Отмена';
-            launchBtn.classList.add('cancel-btn');
         }
 
         function onLaunchBtn() {
