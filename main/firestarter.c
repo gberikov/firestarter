@@ -140,32 +140,49 @@ bool beep(const int freq, const int duration_ms) {
     return aborted;
 }
 
-void countdown_beeps() {
+// Возвращает true, если запуск был отменён во время счёта. Окно отмены —
+// только 9 шагов счёта; после сообщения "launch" запуск зафиксирован.
+bool countdown_beeps() {
     const int countDown = 9;
     int currentCount = countDown;
 
     send_ws_message("{\"type\":\"countdown_start\",\"count\":9}");
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (cancellable_delay_ms(1000)) return true;
 
     for (int i = 1; i <= countDown; i++) {
+        if (launch_abort) return true;
+
         char msg[64];
         snprintf(msg, sizeof(msg), "{\"type\":\"countdown\",\"count\":%d}", currentCount);
         send_ws_message(msg);
 
-        beep(300 + i * 100, 600);
+        if (beep(300 + i * 100, 600)) return true;
         currentCount--;
         ESP_LOGI(TAG, "%d", currentCount);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (cancellable_delay_ms(1000)) return true;
     }
 
+    // Точка фиксации: дальше отмена не действует.
     send_ws_message("{\"type\":\"launch\",\"message\":\"ЗАПУСК!\"}");
     beep(1500, 2000);
+    return false;
 }
 
 void launch_task(void *pvParameters) {
     launch_in_progress = true;
+    launch_abort = false;
     ESP_LOGI(TAG, "Начинаем обратный отсчет");
-    countdown_beeps();
+
+    if (countdown_beeps()) {
+        // Отмена: до MOSFET дело не дошло.
+        ESP_LOGI(TAG, "Запуск отменён");
+        send_ws_message("{\"type\":\"cancelled\",\"message\":\"Запуск отменён\"}");
+        launch_abort = false;
+        launch_in_progress = false;
+        launch_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     ESP_LOGI(TAG, "Запуск!");
     gpio_set_level(MOSFET_GPIO, 1);
