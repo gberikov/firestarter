@@ -229,6 +229,17 @@ esp_err_t launch_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+esp_err_t cancel_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Запрос отмены");
+    if (!launch_in_progress) {
+        httpd_resp_sendstr(req, "Нет активного запуска");
+        return ESP_OK;
+    }
+    launch_abort = true;
+    httpd_resp_sendstr(req, "Отмена запущена");
+    return ESP_OK;
+}
+
 // ===== Антенна (XIAO ESP32-C6, RF-переключатель FM8625H) =====
 typedef enum { ANT_INT_ANT0 = 0, ANT_EXT_ANT1 = 1, ANT_AUTO = 2 } ant_mode_t;
 static ant_mode_t g_current_ant = ANT_EXT_ANT1; // внешняя по умолчанию
@@ -320,6 +331,13 @@ httpd_handle_t start_webserver(void) {
             .handler = launch_handler,
         };
         httpd_register_uri_handler(server, &launch_uri);
+
+        httpd_uri_t cancel_uri = {
+            .uri = "/cancel",
+            .method = HTTP_GET,
+            .handler = cancel_handler,
+        };
+        httpd_register_uri_handler(server, &cancel_uri);
 
 #ifdef CONFIG_HTTPD_WS_SUPPORT
         httpd_uri_t ws_uri = {
