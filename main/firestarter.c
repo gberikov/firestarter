@@ -170,7 +170,6 @@ bool countdown_beeps() {
 
 void launch_task(void *pvParameters) {
     launch_in_progress = true;
-    launch_abort = false;
     ESP_LOGI(TAG, "Начинаем обратный отсчет");
 
     if (countdown_beeps()) {
@@ -221,6 +220,7 @@ esp_err_t launch_handler(httpd_req_t *req) {
         httpd_resp_sendstr(req, "Запуск уже выполняется");
         return ESP_OK;
     }
+    launch_abort = false; // сбросить флаг до создания задачи, чтобы не было гонки с /cancel
     if (xTaskCreate(launch_task, "launch_task", 4096, NULL, 5, &launch_task_handle) == pdPASS) {
         httpd_resp_sendstr(req, "Запуск инициирован");
     } else {
