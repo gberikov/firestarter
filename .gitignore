@@ -15,7 +15,8 @@ dependencies.lock
 __pycache__/
 *.pyc
 
-# OS / editor noise
+# IDE / OS / editor noise
+.idea/
 .DS_Store
 Thumbs.db
 *.swp
