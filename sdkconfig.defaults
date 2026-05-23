@@ -1,0 +1,11 @@
+# Shared, non-secret project defaults. idf.py applies these on a fresh build
+# to (re)generate the local sdkconfig. The active sdkconfig is git-ignored
+# because it holds your real Wi-Fi password — never put secrets here.
+
+# Chip / flash
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="2MB"
+
+# WebSocket support in esp_http_server (required for live launch status push)
+CONFIG_HTTPD_WS_SUPPORT=y

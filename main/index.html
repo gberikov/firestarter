@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <title>Запуск</title>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <style>
+        body {
+            text-align:center;
+            font-family:Arial,sans-serif;
+            margin:0;
+            padding:20px;
+            background:#1a1a1a;
+            color:#fff;
+            min-height:100vh;
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+            align-items:center;
+        }
+        h1 {
+            font-size:2.5em;
+            margin:40px 0;
+            text-shadow:2px 2px 4px rgba(0,0,0,0.5);
+        }
+        .launch-btn {
+            padding:30px 60px;
+            font-size:28px;
+            background:linear-gradient(45deg, #ff6b35, #f7931e);
+            color:white;
+            border:none;
+            border-radius:15px;
+            cursor:pointer;
+            box-shadow:0 8px 16px rgba(255,107,53,0.3);
+            transition:all 0.3s ease;
+            min-width:280px;
+            font-weight:bold;
+            text-transform:uppercase;
+            letter-spacing:1px;
+        }
+        .launch-btn:hover {
+            transform:translateY(-2px);
+            box-shadow:0 12px 24px rgba(255,107,53,0.4);
+        }
+        .launch-btn:active {
+            transform:translateY(0);
+            box-shadow:0 4px 8px rgba(255,107,53,0.3);
+        }
+        .launch-btn:disabled {
+            background:#666;
+            cursor:not-allowed;
+            transform:none;
+            box-shadow:none;
+        }
+
+        .countdown-display {
+            font-size:4em;
+            font-weight:bold;
+            color:#ff6b35;
+            text-shadow:0 0 20px rgba(255,107,53,0.8);
+            margin:30px 0;
+            opacity:0;
+            transition:all 0.3s ease;
+        }
+        .countdown-display.active {
+            opacity:1;
+            transform:scale(1.1);
+        }
+
+        .status-message {
+            font-size:1.5em;
+            color:#4CAF50;
+            margin:20px 0;
+            opacity:0;
+            transition:opacity 0.3s ease;
+        }
+        .status-message.visible {
+            opacity:1;
+        }
+
+        .connection-status {
+            position:absolute;
+            top:20px;
+            right:20px;
+            padding:8px 16px;
+            border-radius:20px;
+            font-size:0.9em;
+            font-weight:bold;
+        }
+        .connected { background:#4CAF50; color:white; }
+        .disconnected { background:#f44336; color:white; }
+
+        @media (max-width: 768px) {
+            body { padding:15px; }
+            h1 { font-size:2.2em; margin:30px 0; }
+            .launch-btn {
+                padding:25px 50px;
+                font-size:24px;
+                min-width:250px;
+            }
+            .countdown-display { font-size:3em; }
+        }
+
+        @media (max-width: 480px) {
+            h1 { font-size:2em; margin:25px 0; }
+            .launch-btn {
+                padding:20px 40px;
+                font-size:20px;
+                min-width:220px;
+            }
+            .countdown-display { font-size:2.5em; }
+            .connection-status { top:10px; right:10px; font-size:0.8em; }
+        }
+
+        @media (max-width: 320px) {
+            body { padding:10px; }
+            h1 { font-size:1.8em; margin:20px 0; }
+            .launch-btn {
+                padding:18px 35px;
+                font-size:18px;
+                min-width:200px;
+            }
+            .countdown-display { font-size:2em; }
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status disconnected" id="status">Отключено</div>
+    <h1>🚀 Пуск ракеты</h1>
+    <div class="countdown-display" id="countdown"></div>
+    <div class="status-message" id="message"></div>
+    <button class='launch-btn' id="launchBtn" onclick='launchRocket()'>Запуск</button>
+
+    <script>
+        let ws;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 8;
+        const statusEl = document.getElementById('status');
+        const countdownEl = document.getElementById('countdown');
+        const messageEl = document.getElementById('message');
+        const launchBtn = document.getElementById('launchBtn');
+
+        function connectWS() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+            const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+            ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+            ws.onopen = () => {
+                statusEl.textContent = 'Подключено';
+                statusEl.className = 'connection-status connected';
+                reconnectAttempts = 0;
+            };
+            ws.onmessage = (event) => {
+                try { handleMessage(JSON.parse(event.data)); } catch (e) { console.error('WS parse error', e); }
+            };
+            ws.onclose = () => {
+                statusEl.textContent = 'Отключено';
+                statusEl.className = 'connection-status disconnected';
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                    setTimeout(connectWS, delay);
+                }
+            };
+            ws.onerror = () => { /* ошибки отработаем через onclose */ };
+        }
+
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'countdown_start':
+                    launchBtn.disabled = true;
+                    countdownEl.classList.add('active');
+                    messageEl.classList.remove('visible');
+                    break;
+
+                case 'countdown':
+                    countdownEl.textContent = data.count;
+                    countdownEl.classList.add('active');
+                    break;
+
+                case 'launch':
+                    countdownEl.textContent = '🚀';
+                    messageEl.textContent = data.message;
+                    messageEl.classList.add('visible');
+                    setTimeout(() => {
+                        countdownEl.classList.remove('active');
+                        messageEl.classList.remove('visible');
+                        launchBtn.disabled = false;
+                    }, 3000);
+                    break;
+
+                case 'status':
+                    messageEl.textContent = data.message;
+                    messageEl.classList.add('visible');
+                    setTimeout(() => messageEl.classList.remove('visible'), 3000);
+                    break;
+
+                default:
+                    console.log('Unknown msg', data);
+            }
+        }
+
+        function launchRocket() {
+            if (launchBtn.disabled) return;
+            fetch('/launch', { method: 'GET', credentials: 'omit' });
+        }
+
+        window.onload = connectWS;
+        window.onbeforeunload = () => { if (ws) try { ws.close(); } catch(e){} };
+    </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+menu "Firestarter Configuration"
+
+config INTERNAL_ANTENNA_GPIO
+    int "Internal Antenna GPIO"
+    default 3
+    help
+        GPIO number for the internal antenna.
+
+config EXTERNAL_ANTENNA_GPIO
+    int "External Antenna GPIO"
+    default 14
+    help
+        GPIO number for the external antenna.
+
+endmenu
+
+menu "Firestarter Wi-Fi Configuration"
+
+config FIRESTARTER_WIFI_SSID
+    string "Wi-Fi SSID"
+    default "Firestarter"
+    help
+        The SSID (name) of the Wi-Fi network.
+
+config FIRESTARTER_WIFI_PASSWORD
+    string "Wi-Fi Password"
+    default ""
+    help
+        Password for the Wi-Fi AP (8-63 chars for WPA2; leave empty for an
+        open network). Set this locally via `idf.py menuconfig` — it is
+        stored only in the git-ignored sdkconfig and must NOT be committed.
+
+endmenu
