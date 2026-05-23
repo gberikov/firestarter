@@ -52,6 +52,10 @@
             transform:none;
             box-shadow:none;
         }
+        .launch-btn.cancel-btn {
+            background:linear-gradient(45deg, #e53935, #b71c1c);
+            box-shadow:0 8px 16px rgba(229,57,53,0.3);
+        }
 
         .countdown-display {
             font-size:4em;
@@ -129,7 +133,7 @@
     <h1>🚀 Пуск ракеты</h1>
     <div class="countdown-display" id="countdown"></div>
     <div class="status-message" id="message"></div>
-    <button class='launch-btn' id="launchBtn" onclick='launchRocket()'>Запуск</button>
+    <button class='launch-btn' id="launchBtn" onclick='onLaunchBtn()'>Запуск</button>
 
     <script>
         let ws;
@@ -168,17 +172,23 @@
         function handleMessage(data) {
             switch (data.type) {
                 case 'countdown_start':
-                    launchBtn.disabled = true;
+                    setCancel();
                     countdownEl.classList.add('active');
                     messageEl.classList.remove('visible');
                     break;
 
                 case 'countdown':
+                    setCancel();
                     countdownEl.textContent = data.count;
                     countdownEl.classList.add('active');
                     break;
 
                 case 'launch':
+                    // Зафиксировано: отмена больше недоступна.
+                    btnMode = 'idle';
+                    launchBtn.disabled = true;
+                    launchBtn.textContent = 'Запуск';
+                    launchBtn.classList.remove('cancel-btn');
                     countdownEl.textContent = '🚀';
                     messageEl.textContent = data.message;
                     messageEl.classList.add('visible');
@@ -187,6 +197,15 @@
                         messageEl.classList.remove('visible');
                         launchBtn.disabled = false;
                     }, 3000);
+                    break;
+
+                case 'cancelled':
+                    countdownEl.classList.remove('active');
+                    countdownEl.textContent = '';
+                    messageEl.textContent = data.message;
+                    messageEl.classList.add('visible');
+                    setTimeout(() => messageEl.classList.remove('visible'), 3000);
+                    setIdle();
                     break;
 
                 case 'status':
@@ -200,9 +219,38 @@
             }
         }
 
-        function launchRocket() {
+        // Режим кнопки: 'idle' = Запуск, 'cancel' = Отмена.
+        let btnMode = 'idle';
+
+        function setIdle() {
+            btnMode = 'idle';
+            launchBtn.disabled = false;
+            launchBtn.textContent = 'Запуск';
+            launchBtn.classList.remove('cancel-btn');
+        }
+
+        function setCancel() {
+            btnMode = 'cancel';
+            launchBtn.disabled = false;
+            launchBtn.textContent = 'Отмена';
+            launchBtn.classList.add('cancel-btn');
+        }
+
+        function onLaunchBtn() {
             if (launchBtn.disabled) return;
+            if (btnMode === 'cancel') {
+                cancelLaunch();
+            } else {
+                launchRocket();
+            }
+        }
+
+        function launchRocket() {
             fetch('/launch', { method: 'GET', credentials: 'omit' });
+        }
+
+        function cancelLaunch() {
+            fetch('/cancel', { method: 'GET', credentials: 'omit' });
         }
 
         window.onload = connectWS;
