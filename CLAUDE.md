@@ -25,7 +25,7 @@ There are **no automated tests** — verification is done on hardware via `idf.p
 ### Configurable options (`main/Kconfig.projbuild`)
 
 Set via `idf.py menuconfig`, not by editing source:
-- **Internal/External Antenna GPIO** — default GPIO3 (internal) / GPIO14 (external)
+- **Antenna control GPIOs** (XIAO ESP32-C6 FM8625H RF switch) — RF switch power (default GPIO3, active-low) + antenna select (default GPIO14: LOW = on-board, HIGH = external). Firmware defaults to the **external** antenna.
 - **Wi-Fi SSID / Password** — SSID default `Firestarter`; the password has **no default** and must be set locally (see below). SoftAP, max 3 clients; WPA/WPA2-PSK when a password is set, otherwise the firmware falls back to an open network.
 
 Hardware pins **hardcoded** in `main/firestarter.c`: `MOSFET_GPIO = GPIO2` (igniter), `BUZZER_GPIO = GPIO21` (LEDC PWM tone). Change these in source, not Kconfig.
@@ -40,7 +40,7 @@ Effectively a single-file firmware: all logic lives in [main/firestarter.c](main
 
 Boot sequence (`app_main`): init NVS → netif → event loop → configure MOSFET GPIO (output, low) → set up LEDC timer/channel for the buzzer → `wifi_init_softap()` → `start_webserver()` → 5 s delay → `startup_melody()`.
 
-`wifi_init_softap()` brings up the AP, then `configure_antenna()` applies an `esp_phy` GPIO antenna-switching config (defaults to the external antenna) and sets Wi-Fi country/TX power.
+`wifi_init_softap()` first calls `antenna_init()` — manual GPIO control of the XIAO's FM8625H RF switch (power GPIO3 low, select GPIO14 high = external antenna) — then brings up the AP and sets Wi-Fi country/TX power. The `esp_phy` antenna-diversity API is **not** used: its binary GPIO encoding doesn't match this board and leaves the RF switch unpowered. The `/ant/*` HTTP handlers switch antennas at runtime via the same `ant_gpio_apply()`.
 
 ### HTTP + WebSocket server (port 80)
 

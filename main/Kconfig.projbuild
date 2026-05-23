@@ -1,16 +1,18 @@
 menu "Firestarter Configuration"
 
-config INTERNAL_ANTENNA_GPIO
-    int "Internal Antenna GPIO"
+config ANT_RF_SWITCH_GPIO
+    int "Antenna RF switch power GPIO"
     default 3
     help
-        GPIO number for the internal antenna.
+        GPIO that powers the FM8625H RF switch on the XIAO ESP32-C6.
+        Active-low: the firmware drives it LOW to enable antenna switching.
 
-config EXTERNAL_ANTENNA_GPIO
-    int "External Antenna GPIO"
+config ANT_SELECT_GPIO
+    int "Antenna select GPIO"
     default 14
     help
-        GPIO number for the external antenna.
+        GPIO that selects the antenna on the XIAO ESP32-C6.
+        LOW = on-board ceramic antenna, HIGH = external U.FL antenna.
 
 endmenu
 

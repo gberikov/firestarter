@@ -13,13 +13,14 @@
 #include "esp_http_server.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
-#include "esp_phy.h"
 
 #define MOSFET_GPIO GPIO_NUM_2
 #define BUZZER_GPIO GPIO_NUM_21
 
-#define INTERNAL_ANTENNA_GPIO CONFIG_INTERNAL_ANTENNA_GPIO
-#define EXTERNAL_ANTENNA_GPIO CONFIG_EXTERNAL_ANTENNA_GPIO
+// XIAO ESP32-C6 FM8625H RF switch: GPIO3 powers the switch (active LOW),
+// GPIO14 selects the antenna (LOW = on-board ceramic, HIGH = external U.FL).
+#define ANT_RF_SWITCH_GPIO CONFIG_ANT_RF_SWITCH_GPIO
+#define ANT_SELECT_GPIO CONFIG_ANT_SELECT_GPIO
 #define FIRESTARTER_WIFI_SSID CONFIG_FIRESTARTER_WIFI_SSID
 #define FIRESTARTER_WIFI_PASSWORD CONFIG_FIRESTARTER_WIFI_PASSWORD
 
@@ -194,16 +195,16 @@ esp_err_t launch_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ===== Антенна: помощники и HTTP-эндпоинты (GPIO14 control only) =====
+// ===== Антенна (XIAO ESP32-C6, RF-переключатель FM8625H) =====
 typedef enum { ANT_INT_ANT0 = 0, ANT_EXT_ANT1 = 1, ANT_AUTO = 2 } ant_mode_t;
 static ant_mode_t g_current_ant = ANT_EXT_ANT1; // внешняя по умолчанию
 
 static void ant_gpio_apply(ant_mode_t ant) {
-    // ANT1 (внешняя) => GPIO14 = 1, ANT0 (внутренняя) => GPIO14 = 0
-    const int internal = (ant == ANT_EXT_ANT1) ? 0 : 1;
-    const int level = (ant == ANT_EXT_ANT1) ? 1 : 0;
-    gpio_set_level(INTERNAL_ANTENNA_GPIO, internal);
-    gpio_set_level(EXTERNAL_ANTENNA_GPIO, level);
+    // RF-переключатель должен быть запитан (GPIO3 = LOW), иначе антенна
+    // подключена только за счёт утечки сигнала. GPIO14 выбирает антенну:
+    // HIGH = внешняя (U.FL), LOW = встроенная керамическая.
+    gpio_set_level(ANT_RF_SWITCH_GPIO, 0);
+    gpio_set_level(ANT_SELECT_GPIO, (ant == ANT_EXT_ANT1) ? 1 : 0);
 }
 
 static esp_err_t ant_set(ant_mode_t ant) {
@@ -316,26 +317,33 @@ httpd_handle_t start_webserver(void) {
     return server;
 }
 
-static void configure_antenna() {
-    esp_phy_ant_gpio_config_t ant_gpio_config = {
-        .gpio_cfg[0] = {.gpio_select = 1, .gpio_num = INTERNAL_ANTENNA_GPIO},
-        .gpio_cfg[1] = {.gpio_select = 1, .gpio_num = EXTERNAL_ANTENNA_GPIO},
+static void antenna_init(void) {
+    // Ручная схема Seeed для XIAO ESP32-C6: настраиваем управляющие пины
+    // RF-переключателя как выходы, подаём питание и выбираем антенну.
+    // PHY-API диверсити (esp_phy_set_ant*) для этой платы не подходит — оно
+    // кодирует номер антенны в те же GPIO и в итоге снимает питание с
+    // переключателя, оставляя встроенную антенну.
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << ANT_RF_SWITCH_GPIO) | (1ULL << ANT_SELECT_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
-    ESP_ERROR_CHECK(esp_phy_set_ant_gpio(&ant_gpio_config));
+    ESP_ERROR_CHECK(gpio_config(&io));
 
-    esp_phy_ant_config_t ant_config = {
-        .rx_ant_mode = ESP_PHY_ANT_MODE_AUTO,
-        .rx_ant_default = ESP_PHY_ANT_ANT1, // Default to external antenna
-        .tx_ant_mode = ESP_PHY_ANT_MODE_ANT1, // Transmit on external antenna
-        .enabled_ant0 = 0, // Index 0 corresponds to internal antenna
-        .enabled_ant1 = 1, // Index 1 corresponds to external antenna
-    };
-    ESP_ERROR_CHECK(esp_phy_set_ant(&ant_config));
+    gpio_set_level(ANT_RF_SWITCH_GPIO, 0); // запитать RF-переключатель (active LOW)
+    vTaskDelay(pdMS_TO_TICKS(100));          // дать переключателю стабилизироваться
+    ant_gpio_apply(g_current_ant);           // выбрать антенну (внешняя по умолчанию)
 
-    ESP_LOGI(TAG, "Antenna configuration applied: INT_GPIO=%d, EXT_GPIO=%d", INTERNAL_ANTENNA_GPIO, EXTERNAL_ANTENNA_GPIO);
+    ESP_LOGI(TAG, "Антенна: RF-переключатель вкл (GPIO%d=0), выбор GPIO%d=%d (%s)",
+             ANT_RF_SWITCH_GPIO, ANT_SELECT_GPIO,
+             (g_current_ant == ANT_EXT_ANT1) ? 1 : 0,
+             (g_current_ant == ANT_EXT_ANT1) ? "внешняя" : "встроенная");
 }
 
 void wifi_init_softap() {
+    antenna_init(); // выбрать внешнюю антенну до старта радио
     esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -358,7 +366,6 @@ void wifi_init_softap() {
     }
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    configure_antenna();
 
     wifi_country_t country = {
         .cc = "US",
