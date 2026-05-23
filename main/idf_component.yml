@@ -1,0 +1,5 @@
+## ESP-IDF Component Manager manifest for the project's main component.
+## Records the minimum ESP-IDF version this firmware is built and tested against.
+## Bump this when moving to a newer IDF release.
+dependencies:
+  idf: ">=6.0.1"
