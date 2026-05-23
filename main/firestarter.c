@@ -191,6 +191,7 @@ void launch_task(void *pvParameters) {
 
     send_ws_message("{\"type\":\"status\",\"message\":\"🚀 Пуск выполнен\"}");
 
+    launch_abort = false; // отмена в момент фиксации не действует — гасим флаг, чтобы вне запуска он был false
     launch_in_progress = false;
     launch_task_handle = NULL;
     vTaskDelete(NULL);
