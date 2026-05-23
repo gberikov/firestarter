@@ -28,6 +28,7 @@ static const char *TAG = "firestarter";
 static httpd_handle_t server_handle = NULL;
 static TaskHandle_t launch_task_handle = NULL;
 static bool launch_in_progress = false;
+static volatile bool launch_abort = false;
 
 // Встроенный HTML файл
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -114,41 +115,73 @@ static inline void send_ws_message(const char *message) {
 }
 
 // ================= Логика звука и запуска =================
-void beep(const int freq, const int duration_ms) {
+// Ждёт ms миллисекунд срезами по 50 мс, чтобы отсчёт можно было прервать
+// в середине ожидания. Возвращает true, если запросили отмену запуска.
+static bool cancellable_delay_ms(int ms) {
+    const int slice_ms = 50;
+    int waited = 0;
+    while (waited < ms) {
+        if (launch_abort) return true;
+        int chunk = (ms - waited) < slice_ms ? (ms - waited) : slice_ms;
+        vTaskDelay(pdMS_TO_TICKS(chunk));
+        waited += chunk;
+    }
+    return launch_abort;
+}
+
+// Возвращает true, если тон был прерван отменой (зуммер при этом глушится).
+bool beep(const int freq, const int duration_ms) {
     ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freq);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 128);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    bool aborted = cancellable_delay_ms(duration_ms);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    return aborted;
 }
 
-void countdown_beeps() {
+// Возвращает true, если запуск был отменён во время счёта. Окно отмены —
+// только 9 шагов счёта; после сообщения "launch" запуск зафиксирован.
+bool countdown_beeps() {
     const int countDown = 9;
     int currentCount = countDown;
 
     send_ws_message("{\"type\":\"countdown_start\",\"count\":9}");
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (cancellable_delay_ms(1000)) return true;
 
     for (int i = 1; i <= countDown; i++) {
+        if (launch_abort) return true;
+
         char msg[64];
         snprintf(msg, sizeof(msg), "{\"type\":\"countdown\",\"count\":%d}", currentCount);
         send_ws_message(msg);
 
-        beep(300 + i * 100, 600);
+        if (beep(300 + i * 100, 600)) return true;
         currentCount--;
         ESP_LOGI(TAG, "%d", currentCount);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (cancellable_delay_ms(1000)) return true;
     }
 
+    // Точка фиксации: дальше отмена не действует.
     send_ws_message("{\"type\":\"launch\",\"message\":\"ЗАПУСК!\"}");
     beep(1500, 2000);
+    return false;
 }
 
 void launch_task(void *pvParameters) {
     launch_in_progress = true;
     ESP_LOGI(TAG, "Начинаем обратный отсчет");
-    countdown_beeps();
+
+    if (countdown_beeps()) {
+        // Отмена: до MOSFET дело не дошло.
+        ESP_LOGI(TAG, "Запуск отменён");
+        send_ws_message("{\"type\":\"cancelled\",\"message\":\"Запуск отменён\"}");
+        launch_abort = false;
+        launch_in_progress = false;
+        launch_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     ESP_LOGI(TAG, "Запуск!");
     gpio_set_level(MOSFET_GPIO, 1);
@@ -158,6 +191,7 @@ void launch_task(void *pvParameters) {
 
     send_ws_message("{\"type\":\"status\",\"message\":\"🚀 Пуск выполнен\"}");
 
+    launch_abort = false; // отмена в момент фиксации не действует — гасим флаг, чтобы вне запуска он был false
     launch_in_progress = false;
     launch_task_handle = NULL;
     vTaskDelete(NULL);
@@ -187,11 +221,23 @@ esp_err_t launch_handler(httpd_req_t *req) {
         httpd_resp_sendstr(req, "Запуск уже выполняется");
         return ESP_OK;
     }
+    launch_abort = false; // сбросить флаг до создания задачи, чтобы не было гонки с /cancel
     if (xTaskCreate(launch_task, "launch_task", 4096, NULL, 5, &launch_task_handle) == pdPASS) {
         httpd_resp_sendstr(req, "Запуск инициирован");
     } else {
         httpd_resp_sendstr(req, "Ошибка запуска");
     }
+    return ESP_OK;
+}
+
+esp_err_t cancel_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Запрос отмены");
+    if (!launch_in_progress) {
+        httpd_resp_sendstr(req, "Нет активного запуска");
+        return ESP_OK;
+    }
+    launch_abort = true;
+    httpd_resp_sendstr(req, "Отмена запущена");
     return ESP_OK;
 }
 
@@ -286,6 +332,13 @@ httpd_handle_t start_webserver(void) {
             .handler = launch_handler,
         };
         httpd_register_uri_handler(server, &launch_uri);
+
+        httpd_uri_t cancel_uri = {
+            .uri = "/cancel",
+            .method = HTTP_GET,
+            .handler = cancel_handler,
+        };
+        httpd_register_uri_handler(server, &cancel_uri);
 
 #ifdef CONFIG_HTTPD_WS_SUPPORT
         httpd_uri_t ws_uri = {
