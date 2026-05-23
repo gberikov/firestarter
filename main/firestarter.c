@@ -28,6 +28,7 @@ static const char *TAG = "firestarter";
 static httpd_handle_t server_handle = NULL;
 static TaskHandle_t launch_task_handle = NULL;
 static bool launch_in_progress = false;
+static volatile bool launch_abort = false;
 
 // Встроенный HTML файл
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -114,13 +115,29 @@ static inline void send_ws_message(const char *message) {
 }
 
 // ================= Логика звука и запуска =================
-void beep(const int freq, const int duration_ms) {
+// Ждёт ms миллисекунд срезами по 50 мс, чтобы отсчёт можно было прервать
+// в середине ожидания. Возвращает true, если запросили отмену запуска.
+static bool cancellable_delay_ms(int ms) {
+    const int slice_ms = 50;
+    int waited = 0;
+    while (waited < ms) {
+        if (launch_abort) return true;
+        int chunk = (ms - waited) < slice_ms ? (ms - waited) : slice_ms;
+        vTaskDelay(pdMS_TO_TICKS(chunk));
+        waited += chunk;
+    }
+    return launch_abort;
+}
+
+// Возвращает true, если тон был прерван отменой (зуммер при этом глушится).
+bool beep(const int freq, const int duration_ms) {
     ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freq);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 128);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    bool aborted = cancellable_delay_ms(duration_ms);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    return aborted;
 }
 
 void countdown_beeps() {
