@@ -27,8 +27,11 @@
 static const char *TAG = "firestarter";
 static httpd_handle_t server_handle = NULL;
 static TaskHandle_t launch_task_handle = NULL;
-static bool launch_in_progress = false;
+static volatile bool launch_in_progress = false;
 static volatile bool launch_abort = false;
+static volatile bool launch_committed = false;   // true после точки фиксации — отмена уже невозможна
+static volatile uint32_t launch_epoch = 0;        // ID текущего запуска; адресная отмена через /cancel?id=
+static portMUX_TYPE launch_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Встроенный HTML файл
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -38,6 +41,9 @@ extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 #ifdef CONFIG_HTTPD_WS_SUPPORT
 #define WS_MAX_CLIENTS 4
 static int ws_clients[WS_MAX_CLIENTS] = { -1, -1, -1, -1 };
+// Размер буфера под httpd_get_client_list(): обязан быть >= max_open_sockets
+// (см. start_webserver, там 6). Берём с запасом.
+#define WS_FDS_MAX 8
 
 static void ws_add_client(int fd) {
     for (int i = 0; i < WS_MAX_CLIENTS; ++i) {
@@ -60,14 +66,36 @@ static void ws_broadcast_json(const char *json) {
         .payload = (uint8_t*)json,
         .len = strlen(json)
     };
-    for (int i = 0; i < WS_MAX_CLIENTS; ++i) {
-        if (ws_clients[i] < 0) continue;
-        esp_err_t err = httpd_ws_send_frame_async(server_handle, ws_clients[i], &frame);
+    // Берём список клиентов у самого сервера, а не из ручного ws_clients[].
+    // Ручная регистрация в ветке HTTP_GET обработчика /ws по факту не наполняла
+    // массив (на устройстве отсчёт шёл — пищалка работала, — но кадры WS уходили
+    // в пустой список, поэтому «Отмена»/цифры в браузер не приходили).
+    // httpd_get_client_list() отдаёт реальные сокеты сессий, httpd_ws_get_fd_info()
+    // отбирает из них WebSocket-клиентов, а httpd_ws_send_data() корректно шлёт кадр
+    // из любой задачи (внутри ставит работу в очередь httpd и блокирует до отправки).
+    size_t num_fds = WS_FDS_MAX;
+    int client_fds[WS_FDS_MAX];
+    if (httpd_get_client_list(server_handle, &num_fds, client_fds) != ESP_OK) return;
+    for (size_t i = 0; i < num_fds; ++i) {
+        if (httpd_ws_get_fd_info(server_handle, client_fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET) continue;
+        esp_err_t err = httpd_ws_send_data(server_handle, client_fds[i], &frame);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "WS send -> %d, ошибка %s, удаляю клиента", ws_clients[i], esp_err_to_name(err));
-            ws_clients[i] = -1;
+            ESP_LOGW(TAG, "WS send -> %d, ошибка %s", client_fds[i], esp_err_to_name(err));
         }
     }
+}
+
+// Отправка одного JSON-кадра конкретному клиенту (для снимка состояния при подключении).
+static void ws_send_to_fd(int fd, const char *json) {
+    if (!server_handle || !json) return;
+    httpd_ws_frame_t frame = {
+        .final = true,
+        .fragmented = false,
+        .type = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t*)json,
+        .len = strlen(json)
+    };
+    httpd_ws_send_frame_async(server_handle, fd, &frame);
 }
 
 static esp_err_t ws_handler(httpd_req_t *req) {
@@ -75,6 +103,19 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         const int fd = httpd_req_to_sockfd(req);
         ws_add_client(fd);
         ESP_LOGI(TAG, "WS подключен: fd=%d", fd);
+        // Снимок состояния: клиент, подключившийся во время запуска, должен сразу
+        // увидеть «Отмена» (или 🚀, если пуск уже зафиксирован), а не пустой «Запуск».
+        if (launch_in_progress) {
+            if (launch_committed) {
+                ws_send_to_fd(fd, "{\"type\":\"launch\",\"message\":\"ЗАПУСК!\"}");
+            } else {
+                char snap[80];
+                snprintf(snap, sizeof(snap),
+                         "{\"type\":\"countdown_start\",\"count\":9,\"id\":%lu}",
+                         (unsigned long)launch_epoch);
+                ws_send_to_fd(fd, snap);
+            }
+        }
         return ESP_OK;
     }
 
@@ -140,20 +181,34 @@ bool beep(const int freq, const int duration_ms) {
     return aborted;
 }
 
+// Непрерываемый тон: для подтверждающего сигнала после точки фиксации,
+// который нельзя глушить отменой (предупреждение о неизбежном пуске).
+static void beep_blocking(const int freq, const int duration_ms) {
+    ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freq);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 128);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
 // Возвращает true, если запуск был отменён во время счёта. Окно отмены —
 // только 9 шагов счёта; после сообщения "launch" запуск зафиксирован.
 bool countdown_beeps() {
     const int countDown = 9;
     int currentCount = countDown;
+    char msg[80];
 
-    send_ws_message("{\"type\":\"countdown_start\",\"count\":9}");
+    snprintf(msg, sizeof(msg),
+             "{\"type\":\"countdown_start\",\"count\":9,\"id\":%lu}", (unsigned long)launch_epoch);
+    send_ws_message(msg);
     if (cancellable_delay_ms(1000)) return true;
 
     for (int i = 1; i <= countDown; i++) {
         if (launch_abort) return true;
 
-        char msg[64];
-        snprintf(msg, sizeof(msg), "{\"type\":\"countdown\",\"count\":%d}", currentCount);
+        snprintf(msg, sizeof(msg),
+                 "{\"type\":\"countdown\",\"count\":%d,\"id\":%lu}", currentCount, (unsigned long)launch_epoch);
         send_ws_message(msg);
 
         if (beep(300 + i * 100, 600)) return true;
@@ -162,14 +217,17 @@ bool countdown_beeps() {
         if (cancellable_delay_ms(1000)) return true;
     }
 
-    // Точка фиксации: дальше отмена не действует.
+    // Точка фиксации: дальше отмена не действует. Помечаем ДО рассылки "launch",
+    // чтобы поздно подключившийся клиент получил корректный снимок.
+    launch_committed = true;
     send_ws_message("{\"type\":\"launch\",\"message\":\"ЗАПУСК!\"}");
-    beep(1500, 2000);
+    beep_blocking(1500, 2000); // подтверждающий тон нельзя глушить отменой
     return false;
 }
 
 void launch_task(void *pvParameters) {
-    launch_in_progress = true;
+    // launch_in_progress уже выставлен в launch_handler (до создания задачи),
+    // чтобы параллельный /launch или /cancel сразу видел активный запуск.
     ESP_LOGI(TAG, "Начинаем обратный отсчет");
 
     if (countdown_beeps()) {
@@ -192,6 +250,7 @@ void launch_task(void *pvParameters) {
     send_ws_message("{\"type\":\"status\",\"message\":\"🚀 Пуск выполнен\"}");
 
     launch_abort = false; // отмена в момент фиксации не действует — гасим флаг, чтобы вне запуска он был false
+    launch_committed = false;
     launch_in_progress = false;
     launch_task_handle = NULL;
     vTaskDelete(NULL);
@@ -217,14 +276,28 @@ esp_err_t root_get_handler(httpd_req_t *req) {
 
 esp_err_t launch_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Запрос запуска");
+
+    // Занимаем слот запуска атомарно ДО создания задачи. Раньше launch_in_progress
+    // выставлялся внутри задачи — два быстрых /launch успевали пройти проверку,
+    // пока задача ещё не стартовала, и порождали два пуска (двойное срабатывание MOSFET).
+    portENTER_CRITICAL(&launch_mux);
     if (launch_in_progress) {
+        portEXIT_CRITICAL(&launch_mux);
         httpd_resp_sendstr(req, "Запуск уже выполняется");
         return ESP_OK;
     }
-    launch_abort = false; // сбросить флаг до создания задачи, чтобы не было гонки с /cancel
+    launch_in_progress = true;
+    launch_committed = false;
+    launch_abort = false;
+    launch_epoch++;            // новый ID запуска — для адресной отмены
+    portEXIT_CRITICAL(&launch_mux);
+
     if (xTaskCreate(launch_task, "launch_task", 4096, NULL, 5, &launch_task_handle) == pdPASS) {
         httpd_resp_sendstr(req, "Запуск инициирован");
     } else {
+        // Откат: задача не создана — освобождаем слот.
+        launch_in_progress = false;
+        launch_task_handle = NULL;
         httpd_resp_sendstr(req, "Ошибка запуска");
     }
     return ESP_OK;
@@ -232,12 +305,30 @@ esp_err_t launch_handler(httpd_req_t *req) {
 
 esp_err_t cancel_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Запрос отмены");
-    if (!launch_in_progress) {
-        httpd_resp_sendstr(req, "Нет активного запуска");
-        return ESP_OK;
+
+    // Необязательный ?id=N — отменяем только конкретный запуск, чтобы запоздавший
+    // в сети /cancel от прошлого пуска не прервал уже следующий.
+    uint32_t req_epoch = 0;
+    bool have_epoch = false;
+    char query[40];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(query, "id", val, sizeof(val)) == ESP_OK) {
+            req_epoch = (uint32_t)strtoul(val, NULL, 10);
+            have_epoch = true;
+        }
     }
-    launch_abort = true;
-    httpd_resp_sendstr(req, "Отмена запущена");
+
+    bool accepted = false;
+    portENTER_CRITICAL(&launch_mux);
+    // Отмена возможна только до точки фиксации и только для текущего запуска.
+    if (launch_in_progress && !launch_committed && (!have_epoch || req_epoch == launch_epoch)) {
+        launch_abort = true;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&launch_mux);
+
+    httpd_resp_sendstr(req, accepted ? "Отмена запущена" : "Нет активного запуска");
     return ESP_OK;
 }
 
@@ -313,7 +404,8 @@ static esp_err_t http_ant_clients_handler(httpd_req_t *req) {
 
 httpd_handle_t start_webserver(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_open_sockets = 6; // консервативно
+    config.max_open_sockets = 6;   // консервативно
+    config.max_uri_handlers = 12;  // регистрируем 9 маршрутов; дефолт (8) не вмещал последний (/ant/clients)
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {

@@ -172,12 +172,14 @@
         function handleMessage(data) {
             switch (data.type) {
                 case 'countdown_start':
+                    if (data.id != null) launchId = data.id;
                     setCancel();
                     countdownEl.classList.add('active');
                     messageEl.classList.remove('visible');
                     break;
 
                 case 'countdown':
+                    if (data.id != null) launchId = data.id;
                     setCancel();
                     countdownEl.textContent = data.count;
                     countdownEl.classList.add('active');
@@ -221,9 +223,13 @@
 
         // Режим кнопки: 'idle' = Запуск, 'cancel' = Отмена.
         let btnMode = 'idle';
+        // ID текущего запуска (из кадров отсчёта) — отправляем его в /cancel,
+        // чтобы запоздавшая отмена не прервала уже следующий пуск.
+        let launchId = null;
 
         function setIdle() {
             btnMode = 'idle';
+            launchId = null;
             launchBtn.disabled = false;
             launchBtn.textContent = 'Запуск';
             launchBtn.classList.remove('cancel-btn');
@@ -250,7 +256,8 @@
         }
 
         function cancelLaunch() {
-            fetch('/cancel', { method: 'GET', credentials: 'omit' });
+            const q = (launchId != null) ? ('?id=' + encodeURIComponent(launchId)) : '';
+            fetch('/cancel' + q, { method: 'GET', credentials: 'omit' });
         }
 
         window.onload = connectWS;
