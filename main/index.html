@@ -7,7 +7,6 @@
     <style>
         :root {
             --bg:        #08090c;
-            --bg-2:      #0e1116;
             --ink:       #eef1f5;
             --muted:     #6b7480;
             --muted-2:   #444c57;
@@ -25,7 +24,7 @@
 
         * { box-sizing: border-box; }
 
-        html, body { height: 100%; }
+        html { height: 100%; }
 
         body {
             margin: 0;
@@ -39,7 +38,9 @@
             font-family: var(--font-sans);
             color: var(--ink);
             background: var(--bg);
-            overflow: hidden;
+            /* По вертикали не обрезаем: на низких экранах (телефон в альбомной
+               ориентации) колонка выше вьюпорта и должна прокручиваться до кнопки. */
+            overflow-x: hidden;
             position: relative;
             -webkit-tap-highlight-color: transparent;
         }
@@ -350,7 +351,7 @@
             50%      { opacity: .25; }
         }
         @keyframes shimmer {
-            0%, 100% { left: -60%; }
+            0% { left: -60%; }
             55%, 100% { left: 130%; }
         }
         @keyframes pulse-cancel {
@@ -365,9 +366,13 @@
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after {
                 animation-duration: .001ms !important;
+                animation-delay: 0s !important;
                 animation-iteration-count: 1 !important;
                 transition-duration: .12s !important;
             }
+            /* liftoff с fill-mode both мгновенно застывает в конечном кадре
+               (opacity:0) — не даём 🚀 исчезнуть у пользователей reduce-motion. */
+            .gauge[data-state="launched"] .gauge-value { animation: none !important; }
         }
     </style>
 </head>
@@ -410,7 +415,6 @@
 
         let ws;
         let reconnectAttempts = 0;
-        const maxReconnectAttempts = 8;
 
         const statusEl    = document.getElementById('status');
         const statusText  = document.getElementById('statusText');
@@ -430,8 +434,15 @@
         // ID текущего запуска (из кадров отсчёта) — отправляем его в /cancel,
         // чтобы запоздавшая отмена не прервала уже следующий пуск.
         let launchId = null;
-        // Стартовое значение отсчёта — задаёт масштаб кольца (определяется на лету).
+        // Стартовое значение отсчёта — задаёт масштаб кольца (приходит в countdown_start).
         let totalCount = null;
+        // Таймер возврата в покой после пуска/отмены: храним хэндл, чтобы
+        // новый отсчёт мог его погасить — иначе устаревший setIdle сбросит
+        // живой отсчёт обратно в «ГОТОВ».
+        let idleTimer = null;
+        // Таймер очистки статусного сообщения (чтобы статус не застревал навсегда).
+        let statusTimer = null;
+        const IDLE_MSG = 'система готова к запуску';
 
         // fraction: 0..1 — доля оставшегося времени (заполненность дуги).
         function setRing(fraction) {
@@ -447,26 +458,46 @@
             countdownEl.classList.add('tick');
         }
 
+        // Единая точка управления кнопкой: 'launch' | 'cancel' | 'locked'.
+        function setButton(mode) {
+            btnMode = (mode === 'cancel') ? 'cancel' : 'idle';
+            launchBtn.disabled = (mode === 'locked');
+            launchBtn.classList.toggle('cancel-btn', mode === 'cancel');
+            btnLabel.textContent = (mode === 'cancel') ? 'Отмена' : 'Запуск';
+        }
+
         function setIdle() {
-            btnMode = 'idle';
+            clearTimeout(idleTimer);
+            idleTimer = null;
             launchId = null;
             totalCount = null;
             gaugeEl.dataset.state = 'idle';
             gaugeEl.classList.remove('hot');
             countdownEl.classList.remove('tick');
             countdownEl.textContent = 'ГОТОВ';
-            messageEl.textContent = 'система готова к запуску';
+            messageEl.textContent = IDLE_MSG;
             setRing(0);
-            launchBtn.disabled = false;
-            launchBtn.classList.remove('cancel-btn');
-            btnLabel.textContent = 'Запуск';
+            // Кнопка запуска активна только при живом WS: вслепую не запускаем.
+            const connected = ws && ws.readyState === WebSocket.OPEN;
+            setButton(connected ? 'launch' : 'locked');
         }
 
         function setCancel() {
-            btnMode = 'cancel';
-            launchBtn.disabled = false;
-            launchBtn.classList.add('cancel-btn');
-            btnLabel.textContent = 'Отмена';
+            setButton('cancel');
+        }
+
+        // Терминальное состояние (пуск/отмена): запираем кнопку, показываем глиф
+        // и возвращаемся в покой по таймеру; новый отсчёт гасит этот таймер.
+        function showFinal(state, glyph, message, idleDelay) {
+            setButton('locked');
+            gaugeEl.dataset.state = state;
+            gaugeEl.classList.remove('hot');
+            countdownEl.classList.remove('tick');
+            countdownEl.textContent = glyph;
+            messageEl.textContent = message;
+            setRing(0);
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(setIdle, idleDelay);
         }
 
         function connectWS() {
@@ -478,6 +509,9 @@
                 statusText.textContent = 'Подключено';
                 statusEl.className = 'connection-status connected';
                 reconnectAttempts = 0;
+                // Базовое состояние после (пере)подключения: если идёт запуск,
+                // сервер сразу пришлёт снапшот отсчёта и UI снова взведётся.
+                setIdle();
             };
             ws.onmessage = (event) => {
                 try { handleMessage(JSON.parse(event.data)); } catch (e) { console.error('WS parse error', e); }
@@ -485,11 +519,14 @@
             ws.onclose = () => {
                 statusText.textContent = 'Отключено';
                 statusEl.className = 'connection-status disconnected';
-                if (reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++;
-                    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
-                    setTimeout(connectWS, delay);
-                }
+                // Без связи запуск вслепую запрещён (отсчёт не был бы виден и
+                // кнопка отмены не появилась бы); отмена идущего отсчёта остаётся доступной.
+                if (btnMode !== 'cancel') launchBtn.disabled = true;
+                // Переподключаемся бесконечно (с потолком 10 с): страница на
+                // нестабильной точке доступа не должна умирать навсегда.
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, Math.min(reconnectAttempts, 4)), 10000);
+                setTimeout(connectWS, delay);
             };
             ws.onerror = () => { /* ошибки отработаем через onclose */ };
         }
@@ -498,7 +535,10 @@
             switch (data.type) {
                 case 'countdown_start':
                     if (data.id != null) launchId = data.id;
-                    totalCount = null;
+                    clearTimeout(idleTimer);
+                    // Масштаб кольца берём из кадра: сервер шлёт count и в снапшоте
+                    // позднему клиенту, так что шкала верна и при переподключении.
+                    totalCount = data.count || 9;
                     setCancel();
                     gaugeEl.dataset.state = 'armed';
                     gaugeEl.classList.remove('hot');
@@ -509,7 +549,8 @@
 
                 case 'countdown':
                     if (data.id != null) launchId = data.id;
-                    if (totalCount == null) totalCount = data.count || 9;
+                    clearTimeout(idleTimer);
+                    if (totalCount == null) totalCount = 9; // контракт: счёт всегда от 9
                     setCancel();
                     gaugeEl.dataset.state = 'armed';
                     punch(data.count);
@@ -518,28 +559,14 @@
                     break;
 
                 case 'launch':
-                    // Зафиксировано: отмена больше недоступна.
-                    btnMode = 'idle';
-                    launchBtn.disabled = true;
-                    launchBtn.classList.remove('cancel-btn');
-                    btnLabel.textContent = 'Запуск';
-                    gaugeEl.dataset.state = 'launched';
-                    gaugeEl.classList.remove('hot');
-                    countdownEl.classList.remove('tick');
-                    countdownEl.textContent = '🚀';
-                    messageEl.textContent = data.message || 'Пуск!';
-                    setRing(0);
-                    setTimeout(setIdle, 3200);
+                    // Зафиксировано: отмена больше недоступна. Сервер занят ещё
+                    // ~4 с (тон 2 с + импульс MOSFET 2 с) — держим кнопку запертой
+                    // до конца, чтобы клик не ушёл в молчаливый отказ.
+                    showFinal('launched', '🚀', data.message || 'Пуск!', 4200);
                     break;
 
                 case 'cancelled':
-                    gaugeEl.dataset.state = 'cancelled';
-                    gaugeEl.classList.remove('hot');
-                    countdownEl.classList.remove('tick');
-                    countdownEl.textContent = '✕';
-                    messageEl.textContent = data.message || 'Запуск отменён';
-                    setRing(0);
-                    setTimeout(setIdle, 2600);
+                    showFinal('cancelled', '✕', data.message || 'Запуск отменён', 2600);
                     break;
 
                 case 'status':
@@ -547,6 +574,12 @@
                     messageEl.classList.remove('flash');
                     void messageEl.offsetWidth;
                     messageEl.classList.add('flash');
+                    // Статус не должен застревать навсегда: в покое возвращаем
+                    // подпись готовности (как авто-скрытие в старом UI).
+                    clearTimeout(statusTimer);
+                    statusTimer = setTimeout(() => {
+                        if (gaugeEl.dataset.state === 'idle') messageEl.textContent = IDLE_MSG;
+                    }, 5000);
                     break;
 
                 default:
@@ -564,12 +597,12 @@
         }
 
         function launchRocket() {
-            fetch('/launch', { method: 'GET', credentials: 'omit' });
+            fetch('/launch');
         }
 
         function cancelLaunch() {
             const q = (launchId != null) ? ('?id=' + encodeURIComponent(launchId)) : '';
-            fetch('/cancel' + q, { method: 'GET', credentials: 'omit' });
+            fetch('/cancel' + q);
         }
 
         window.onload = connectWS;
